@@ -1,5 +1,51 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Environment Variables
+
+Create a `.env.local` file in the root directory with the following variables:
+
+### GitHub OAuth Configuration
+
+1. **`GITHUB_ID`** - Your GitHub OAuth App Client ID
+   - Create a GitHub OAuth App at: https://github.com/settings/developers
+   - Set Authorization callback URL to: `http://localhost:3000/api/auth/callback/github`
+
+2. **`GITHUB_SECRET`** - Your GitHub OAuth App Client Secret
+   - Generated when you create the OAuth App
+
+### NextAuth Configuration
+
+3. **`NEXTAUTH_URL`** - The base URL of your application
+   - For local development: `http://localhost:3000`
+   - For production: Your deployed URL
+
+4. **`NEXTAUTH_SECRET`** - Secret key for encrypting tokens and sessions
+   - Generate with: `openssl rand -base64 32`
+   - Or use any secure random string
+
+### Access Control
+
+5. **`ALLOWED_USERS`** - Comma-separated list of GitHub usernames allowed to access the dashboard
+   - Example: `icalvo-MS,jwaimann`
+   - Only these users will be able to authenticate and view the dashboard
+
+### GitHub API Access
+
+6. **`GITHUB_TOKEN`** - GitHub Personal Access Token for fetching Copilot metrics
+   - Create at: https://github.com/settings/tokens
+   - Required scopes: `read:org`, `read:user`, `copilot`
+
+### Example `.env.local`
+
+```bash
+GITHUB_ID=your_github_oauth_app_client_id
+GITHUB_SECRET=your_github_oauth_app_client_secret
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=your_generated_secret_here
+ALLOWED_USERS=icalvo-MS,jwaimann
+GITHUB_TOKEN=ghp_your_personal_access_token
+```
+
 ## Getting Started
 
 First, run the development server:
