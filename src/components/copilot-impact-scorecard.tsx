@@ -13,19 +13,31 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover"
 
-export function CopilotImpactScorecard() {
+interface CopilotImpactScorecardProps {
+    org?: any
+    user?: any
+    copilotSeats?: any
+    activeUsers: number | null
+    lastDayUsage?: any
+}
+
+export function CopilotImpactScorecard({ org, user, copilotSeats, activeUsers, lastDayUsage }: CopilotImpactScorecardProps) {
     // Configurable state
     const [hoursSavedPerWeek, setHoursSavedPerWeek] = useState(2.5)
     const [hourlyRate, setHourlyRate] = useState(65)
 
     // Constants
-    const activeUsers = 120
     const licenseCostPerUser = 19 // Monthly cost
 
+    // Calculate Copilot seats metrics
+    const totalSeats = copilotSeats?.total_seats ?? 0
+    const assignedSeatsCount = copilotSeats?.seats?.length ?? 0
+    const usagePercentage = totalSeats > 0 ? Math.round((assignedSeatsCount / totalSeats) * 100) : 0
+
     // Weekly calculations
-    const totalHoursSaved = Math.round(activeUsers * hoursSavedPerWeek)
+    const totalHoursSaved = Math.round((activeUsers || 0) * hoursSavedPerWeek)
     const totalValueGenerated = totalHoursSaved * hourlyRate
-    const totalCost = (activeUsers * licenseCostPerUser) / 4 // Weekly cost approx
+    const totalCost = ((activeUsers || 0) * licenseCostPerUser) / 4 // Weekly cost approx
     const netRoi = totalValueGenerated - totalCost
     const roiMultiplier = (totalValueGenerated / (totalCost || 1)).toFixed(1) // Avoid div by zero
 
@@ -97,14 +109,159 @@ export function CopilotImpactScorecard() {
                 </Popover>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
+                {/* 1. Total Repositories */}
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            Total Repositories {org ? `(${org.login})` : '(Personal)'}
+                            <InfoTooltip
+                                title="Repository Overview"
+                                content="The total number of public repositories currently active in your organization."
+                                insight="Consistent repo growth often precedes a spike in Copilot license demand."
+                            />
+                        </CardTitle>
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            className="h-4 w-4 text-muted-foreground"
+                        >
+                            <path d="M4 11a9 9 0 0 1 9 9" />
+                            <path d="M4 4a16 16 0 0 1 16 16" />
+                            <circle cx="5" cy="19" r="1" />
+                        </svg>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">
+                            {org ? (org.public_repos + (org.total_private_repos || 0)) : (user?.public_repos || 0)}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            +2 from last month
+                        </p>
+                    </CardContent>
+                </Card>
+
+                {/* 2. Copilot Seats */}
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            Copilot Seats
+                            <InfoTooltip
+                                title="License Management"
+                                content="Shows total available seats vs currently assigned developers."
+                                insight="Aim for >90% assignment to maximize ROI on your enterprise subscription."
+                            />
+                        </CardTitle>
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            className="h-4 w-4 text-muted-foreground"
+                        >
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                            <circle cx="9" cy="7" r="4" />
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+                        </svg>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="flex items-baseline justify-between">
+                            <div className="text-2xl font-bold">
+                                {totalSeats > 0 ? totalSeats : '--'}
+                            </div>
+                            {totalSeats > 0 && (
+                                <div className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
+                                    {usagePercentage}% Used
+                                </div>
+                            )}
+                        </div>
+                        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-secondary/50">
+                            <div
+                                className="h-full bg-primary transition-all duration-500 ease-in-out"
+                                style={{
+                                    width: `${usagePercentage}%`
+                                }}
+                            />
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                            {copilotSeats?.seats ? (
+                                <span><strong>{assignedSeatsCount}</strong> assigned of {totalSeats} total</span>
+                            ) : (
+                                'Requires Org Access'
+                            )}
+                        </p>
+                    </CardContent>
+                </Card>
+
+                {/* 3. Active Users */}
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            Active Users (Last Day)
+                            <InfoTooltip
+                                title="Engagement Density"
+                                content="How many individual developers interacted with Copilot in the last 24 hours."
+                                insight="A high ratio relative to assigned seats indicates healthy habit formation."
+                            />
+                        </CardTitle>
+                        <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            className="h-4 w-4 text-muted-foreground"
+                        >
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                        </svg>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">{activeUsers !== null ? activeUsers : '--'}</div>
+                        <p className="text-xs text-muted-foreground">
+                            {lastDayUsage ? `Date: ${lastDayUsage.date}` : 'No usage data available'}
+                        </p>
+                    </CardContent>
+                </Card>
+
+                {/* 4. Lines of Code Accepted */}
+                <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                        <CardTitle className="text-sm font-medium flex items-center gap-2">
+                            Lines of Code Accepted
+                            <InfoTooltip
+                                title="Code Contribution"
+                                content="Total lines of code suggested by Copilot and accepted into the codebase."
+                                insight="Increasing volume suggests growing trust and reliance on AI suggestions."
+                            />
+                        </CardTitle>
+                        <Code className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                        <div className="text-2xl font-bold">14.2k</div>
+                        <p className="text-xs text-muted-foreground">
+                            +18% from last week
+                        </p>
+                    </CardContent>
+                </Card>
+
+                {/* 5. Est. Hours Saved / Week */}
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                         <CardTitle className="text-sm font-medium flex items-center gap-2">
                             Est. Hours Saved / Week
                             <InfoTooltip
                                 title="Productivity Gain"
-                                content={`Estimated hours saved across ${activeUsers} active users. Current assumption: ${hoursSavedPerWeek}h/user/week.`}
+                                content={`Estimated hours saved across ${activeUsers || 0} active users. Current assumption: ${hoursSavedPerWeek}h/user/week.`}
                                 insight="Reinvest these hours into technical debt reduction or feature innovation."
                             />
                         </CardTitle>
@@ -118,6 +275,7 @@ export function CopilotImpactScorecard() {
                     </CardContent>
                 </Card>
 
+                {/* 6. Weekly Value Generated */}
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                         <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -138,6 +296,7 @@ export function CopilotImpactScorecard() {
                     </CardContent>
                 </Card>
 
+                {/* 7. Weekly ROI */}
                 <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                         <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -154,26 +313,6 @@ export function CopilotImpactScorecard() {
                         <div className="text-2xl font-bold">{roiMultiplier}x</div>
                         <p className="text-xs text-muted-foreground">
                             ${Math.round(netRoi).toLocaleString()} net value
-                        </p>
-                    </CardContent>
-                </Card>
-
-                <Card>
-                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                        <CardTitle className="text-sm font-medium flex items-center gap-2">
-                            Lines of Code Accepted
-                            <InfoTooltip
-                                title="Code Contribution"
-                                content="Total lines of code suggested by Copilot and accepted into the codebase."
-                                insight="Increasing volume suggests growing trust and reliance on AI suggestions."
-                            />
-                        </CardTitle>
-                        <Code className="h-4 w-4 text-muted-foreground" />
-                    </CardHeader>
-                    <CardContent>
-                        <div className="text-2xl font-bold">14.2k</div>
-                        <p className="text-xs text-muted-foreground">
-                            +18% from last week
                         </p>
                     </CardContent>
                 </Card>

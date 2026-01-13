@@ -50,7 +50,9 @@ export default async function Dashboard(props: {
               const middle = copilotUsage[Math.floor(copilotUsage.length / 2)];
               const last = copilotUsage[copilotUsage.length - 1];
               console.log("Structure Check (First/Mid/Last):");
-              [first, middle, last].forEach((d, i) => console.log(`Day ${i}:`, Object.keys(d)));
+              [first, middle, last].forEach((d, i) => {
+                console.log(`Day ${i}:`, Object.keys(d));
+              });
             }
           } catch (usageError: any) {
             console.error("Error calling getCopilotUsage:", usageError);
@@ -84,11 +86,6 @@ export default async function Dashboard(props: {
   // Calculate active users from the last day of usage data if available
   const lastDayUsage = copilotUsage && copilotUsage.length > 0 ? copilotUsage[copilotUsage.length - 1] : null;
   const activeUsers = lastDayUsage ? (lastDayUsage.total_active_users || 0) : null;
-
-  // Calculate Copilot seats metrics
-  const totalSeats = copilotSeats?.total_seats ?? 0;
-  const assignedSeatsCount = copilotSeats?.seats?.length ?? 0;
-  const usagePercentage = totalSeats > 0 ? Math.round((assignedSeatsCount / totalSeats) * 100) : 0;
 
   const formatTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -143,131 +140,17 @@ export default async function Dashboard(props: {
       )}
 
       {/* Impact Scorecard Section */}
-      <CopilotImpactScorecard />
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              Total Repositories {org ? `(${org.login})` : '(Personal)'}
-              <InfoTooltip
-                title="Repository Overview"
-                content="The total number of public repositories currently active in your organization."
-                insight="Consistent repo growth often precedes a spike in Copilot license demand."
-              />
-            </CardTitle>
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-              className="h-4 w-4 text-muted-foreground"
-            >
-              <path d="M4 11a9 9 0 0 1 9 9" />
-              <path d="M4 4a16 16 0 0 1 16 16" />
-              <circle cx="5" cy="19" r="1" />
-            </svg>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {org ? (org.public_repos + (org.total_private_repos || 0)) : (user?.public_repos || 0)}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              +2 from last month
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              Copilot Seats
-              <InfoTooltip
-                title="License Management"
-                content="Shows total available seats vs currently assigned developers."
-                insight="Aim for >90% assignment to maximize ROI on your enterprise subscription."
-              />
-            </CardTitle>
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-              className="h-4 w-4 text-muted-foreground"
-            >
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
-            </svg>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-baseline justify-between">
-              <div className="text-2xl font-bold">
-                {totalSeats > 0 ? totalSeats : '--'}
-              </div>
-              {totalSeats > 0 && (
-                <div className="text-xs font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">
-                  {usagePercentage}% Used
-                </div>
-              )}
-            </div>
-            <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-secondary/50">
-              <div
-                className="h-full bg-primary transition-all duration-500 ease-in-out"
-                style={{
-                  width: `${usagePercentage}%`
-                }}
-              />
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              {copilotSeats?.seats ? (
-                <span><strong>{assignedSeatsCount}</strong> assigned of {totalSeats} total</span>
-              ) : (
-                'Requires Org Access'
-              )}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              Active Users (Last Day)
-              <InfoTooltip
-                title="Engagement Density"
-                content="How many individual developers interacted with Copilot in the last 24 hours."
-                insight="A high ratio relative to assigned seats indicates healthy habit formation."
-              />
-            </CardTitle>
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-              className="h-4 w-4 text-muted-foreground"
-            >
-              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-            </svg>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{activeUsers !== null ? activeUsers : '--'}</div>
-            <p className="text-xs text-muted-foreground">
-              {lastDayUsage ? `Date: ${lastDayUsage.date}` : 'No usage data available'}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <CopilotImpactScorecard
+        org={org}
+        user={user}
+        copilotSeats={copilotSeats}
+        activeUsers={activeUsers}
+        lastDayUsage={lastDayUsage}
+      />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-        <CopilotAdoptionTrends />
-        <CopilotEngagementBreakdown />
+        <CopilotAdoptionTrends data={filteredUsage ?? undefined} />
+        <CopilotEngagementBreakdown data={filteredUsage ?? undefined} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
