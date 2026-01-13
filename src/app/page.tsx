@@ -1,4 +1,5 @@
 import { GitHubService } from "@/services/github-service";
+import { auth, signOut } from "@/auth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CopilotUsageChart } from "@/components/copilot-usage-chart";
@@ -15,6 +16,7 @@ export default async function Dashboard(props: {
 }) {
   const searchParams = await props.searchParams;
   const range = searchParams.range || "30";
+  const session = await auth();
 
   // For demonstration, we'll try to fetch the authenticated user if the token is present
   let user = null;
@@ -108,8 +110,28 @@ export default async function Dashboard(props: {
         </div>
         <div className="flex items-center gap-4">
           <DateRangeSelector />
-          <div className="flex items-center gap-2 border-l pl-4 ml-2">
-            {user ? <span className="text-sm font-medium">{user.login}</span> : <Button variant="outline">Connect GitHub</Button>}
+          <div className="flex items-center gap-4 border-l pl-4 ml-2">
+            <div className="flex flex-col items-end">
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Data Source</span>
+              {user ? <span className="text-sm font-medium">{user.login}</span> : <span className="text-destructive text-sm">No Token</span>}
+            </div>
+
+            <div className="h-8 w-[1px] bg-border mx-2" />
+
+            <div className="flex items-center gap-3">
+              {session?.user?.image && (
+                <img src={session.user.image} alt={session.user.name || "User"} className="w-8 h-8 rounded-full border" />
+              )}
+              <div className="flex flex-col items-start">
+                <span className="text-sm font-medium">{session?.user?.name}</span>
+                <form action={async () => {
+                  "use server"
+                  await signOut()
+                }}>
+                  <button type="submit" className="text-xs text-muted-foreground hover:text-red-500 transition-colors">Sign Out</button>
+                </form>
+              </div>
+            </div>
           </div>
         </div>
       </div>
