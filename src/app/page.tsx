@@ -82,9 +82,6 @@ export default async function Dashboard(props: {
     error = "Failed to authenticate with GitHub. Please check your token.";
   }
 
-  // Artificial delay to show loading UX
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
   // Filter copilotUsage data based on the selected range
   let filteredUsage = copilotUsage;
   if (copilotUsage && range !== 'total') {
@@ -294,13 +291,15 @@ export default async function Dashboard(props: {
           <div className="flex justify-end">
             <BillingDateSelector currentYear={billingYear} currentMonth={billingMonth} />
           </div>
-          <Suspense fallback={<PremiumRequestsSkeleton />}>
-            <PremiumRequestsContent
-              org={process.env.NEXT_PUBLIC_GITHUB_ORG!}
-              year={billingYear}
-              month={billingMonth}
-            />
-          </Suspense>
+          {activeTab === "premium-requests" && (
+            <Suspense fallback={<PremiumRequestsSkeleton />}>
+              <PremiumRequestsContent
+                org={process.env.NEXT_PUBLIC_GITHUB_ORG!}
+                year={billingYear}
+                month={billingMonth}
+              />
+            </Suspense>
+          )}
         </TabsContent>
       </Tabs>
     </div>

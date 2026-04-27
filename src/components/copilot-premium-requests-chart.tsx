@@ -3,7 +3,6 @@
 import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { InfoTooltip } from "@/components/info-tooltip";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
     LineChart,
@@ -15,16 +14,15 @@ import {
     Legend,
     ResponsiveContainer,
 } from "recharts";
-import type { DailyUsagePoint, UserDailyData } from "@/services/github-service";
+import type { DailyUsagePoint } from "@/services/github-service";
 
 const CHART_COLORS = [
     "#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
-    "#ec4899", "#06b6d4",
+    "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#a855f7",
 ];
 
 interface Props {
     orgDailyData: DailyUsagePoint[];
-    usersDailyData: UserDailyData[];
 }
 
 const fmt = (n: number) =>
@@ -41,7 +39,7 @@ const CustomTooltip = ({
 }) => {
     if (!active || !payload?.length) return null;
     return (
-        <div className="rounded-lg border bg-background p-3 shadow-sm text-sm space-y-1">
+        <div className="rounded-lg border bg-background p-3 shadow-sm text-sm space-y-1 max-w-xs">
             <p className="font-medium">Day {label}</p>
             {payload.map(p => (
                 <p key={p.name} style={{ color: p.color }}>
@@ -52,25 +50,47 @@ const CustomTooltip = ({
     );
 };
 
-export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Props) {
-    const [view, setView] = useState<"costs" | "users">("costs");
-    const [selectedUsers, setSelectedUsers] = useState<Set<string>>(
-        () => new Set(usersDailyData.map(u => u.login))
+export function CopilotPremiumRequestsChart({ orgDailyData = [] }: Props) {
+    const [view, setView] = useState<"costs" | "models">("costs");
+
+    // Collect all unique model names across all days (top 5 by total gross amount)
+    const topModels = useMemo(() => {
+        const modelTotals = new Map<string, number>();
+        for (const day of orgDailyData) {
+            for (const m of (day.byModel ?? [])) {
+                modelTotals.set(m.model, (modelTotals.get(m.model) ?? 0) + m.grossAmount);
+            }
+        }
+        return Array.from(modelTotals.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 7)
+            .map(([model]) => model);
+    }, [orgDailyData]);
+
+    const [selectedModels, setSelectedModels] = useState<Set<string>>(
+        () => new Set(topModels.slice(0, 5))
     );
 
-    const toggleUser = (login: string) => {
-        setSelectedUsers(prev => {
+    // Update selection when topModels resolves (only on first load)
+    useMemo(() => {
+        if (selectedModels.size === 0 && topModels.length > 0) {
+            setSelectedModels(new Set(topModels.slice(0, 5)));
+        }
+    }, [topModels, selectedModels.size]);
+
+    const toggleModel = (model: string) => {
+        setSelectedModels(prev => {
             const next = new Set(prev);
-            if (next.has(login)) {
-                if (next.size > 1) next.delete(login); // keep at least one
+            if (next.has(model)) {
+                if (next.size > 1) next.delete(model);
             } else {
-                next.add(login);
+                next.add(model);
             }
             return next;
         });
     };
 
-    // --- Daily Costs view data ---
+    // Daily Costs view data (org-level gross vs billed)
     const costsData = orgDailyData.map(d => ({
         day: d.date.slice(8),
         "Gross Amount": d.grossAmount,
@@ -79,26 +99,20 @@ export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Pr
 
     const hasOrgData = costsData.some(d => d["Gross Amount"] > 0 || d["Billed Amount"] > 0);
 
-    // --- Per-User Evolution view data ---
-    // Build one record per day with a key per user
-    const usersData = useMemo(() => {
-        const active = usersDailyData.filter(u => selectedUsers.has(u.login));
-        if (active.length === 0) return [];
-        // Collect all dates
-        const allDates = Array.from(
-            new Set(active.flatMap(u => u.data.map(d => d.date)))
-        ).sort();
-        return allDates.map(date => {
-            const point: Record<string, number | string> = { day: date.slice(8) };
-            for (const u of active) {
-                const d = u.data.find(x => x.date === date);
-                point[u.login] = d?.grossAmount ?? 0;
+    // Per-model view data
+    const modelsData = useMemo(() => {
+        const active = Array.from(selectedModels);
+        return orgDailyData.map(d => {
+            const point: Record<string, number | string> = { day: d.date.slice(8) };
+            for (const model of active) {
+                const m = (d.byModel ?? []).find(x => x.model === model);
+                point[model] = m?.grossAmount ?? 0;
             }
             return point;
         });
-    }, [usersDailyData, selectedUsers]);
+    }, [orgDailyData, selectedModels]);
 
-    const hasUsersData = usersData.some(row =>
+    const hasModelsData = modelsData.some(row =>
         Object.entries(row).some(([k, v]) => k !== "day" && (v as number) > 0)
     );
 
@@ -107,16 +121,16 @@ export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Pr
             <CardHeader>
                 <div className="flex items-center justify-between flex-wrap gap-3">
                     <CardTitle className="flex items-center gap-2">
-                        {view === "costs" ? "Daily Premium Request Costs" : "Per-User Daily Evolution"}
+                        {view === "costs" ? "Daily Premium Request Costs" : "Daily Cost by Model"}
                         <InfoTooltip
-                            title={view === "costs" ? "Daily Premium Request Costs" : "Per-User Daily Evolution"}
+                            title={view === "costs" ? "Daily Premium Request Costs" : "Daily Cost by Model"}
                             content={view === "costs"
-                                ? "Shows gross (before discounts) and billed (after inclusion allowance) premium request costs per day."
-                                : "Shows each user's daily gross premium request cost. Top 5 users by usage are available. Toggle users with the checkboxes below."
+                                ? "Shows gross (before discounts) and billed (after inclusion allowance) premium request costs per day for the whole org."
+                                : "Shows each model gross daily cost. Toggle models with the buttons below. Top 5 models by monthly spend are pre-selected."
                             }
                             insight={view === "costs"
                                 ? "Spikes in gross amount indicate intensive AI usage days. Billed amount reflects actual charges after included quota."
-                                : "Users whose lines spike on the same days may indicate team-wide events (sprints, releases) driving premium model usage."
+                                : "Models that spike on the same days indicate coordinated usage patterns. High-cost days correlate with team sprints or releases."
                             }
                         />
                     </CardTitle>
@@ -132,41 +146,38 @@ export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Pr
                             Daily Costs
                         </button>
                         <button
-                            onClick={() => setView("users")}
+                            onClick={() => setView("models")}
                             className={cn(
                                 "px-3 py-1 rounded-md text-xs font-medium transition-colors",
-                                view === "users" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
+                                view === "models" ? "bg-background shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"
                             )}
                         >
-                            Per-User
+                            Per-Model
                         </button>
                     </div>
                 </div>
-                {/* User selector — only visible in per-user view */}
-                {view === "users" && usersDailyData.length > 0 && (
+                {/* Model selector — only visible in per-model view */}
+                {view === "models" && topModels.length > 0 && (
                     <div className="flex flex-wrap gap-2 pt-1">
-                        {usersDailyData.map((u, i) => (
+                        {topModels.map((model, i) => (
                             <button
-                                key={u.login}
-                                onClick={() => toggleUser(u.login)}
+                                key={model}
+                                onClick={() => toggleModel(model)}
                                 className={cn(
                                     "flex items-center gap-1.5 px-2 py-1 rounded-full border text-xs font-medium transition-all",
-                                    selectedUsers.has(u.login)
+                                    selectedModels.has(model)
                                         ? "border-transparent text-white"
                                         : "border-muted-foreground/30 text-muted-foreground bg-background hover:border-muted-foreground/60"
                                 )}
-                                style={selectedUsers.has(u.login) ? { backgroundColor: CHART_COLORS[i % CHART_COLORS.length] } : {}}
+                                style={selectedModels.has(model) ? { backgroundColor: CHART_COLORS[i % CHART_COLORS.length] } : {}}
                             >
                                 <span
-                                    className="w-2 h-2 rounded-full inline-block"
+                                    className="w-2 h-2 rounded-full inline-block flex-shrink-0"
                                     style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
                                 />
-                                {u.login}
+                                {model}
                             </button>
                         ))}
-                        {usersDailyData.length === 0 && (
-                            <span className="text-xs text-muted-foreground italic">No user data available</span>
-                        )}
                     </div>
                 )}
             </CardHeader>
@@ -194,13 +205,13 @@ export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Pr
                         </ResponsiveContainer>
                     )
                 ) : (
-                    !hasUsersData ? (
+                    !hasModelsData ? (
                         <div className="h-full flex items-center justify-center text-muted-foreground italic text-sm border border-dashed rounded-md">
-                            No per-user data for this period.
+                            No per-model data for this period.
                         </div>
                     ) : (
                         <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={usersData} margin={{ top: 8, right: 24, left: 8, bottom: 24 }}>
+                            <LineChart data={modelsData} margin={{ top: 8, right: 24, left: 8, bottom: 24 }}>
                                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                                 <XAxis
                                     dataKey="day"
@@ -210,14 +221,14 @@ export function CopilotPremiumRequestsChart({ orgDailyData, usersDailyData }: Pr
                                 <YAxis tickFormatter={v => `$${v}`} tick={{ fontSize: 11 }} width={72} />
                                 <Tooltip content={<CustomTooltip />} />
                                 <Legend verticalAlign="top" />
-                                {usersDailyData
-                                    .filter(u => selectedUsers.has(u.login))
-                                    .map((u, i) => (
+                                {topModels
+                                    .filter(m => selectedModels.has(m))
+                                    .map((model, i) => (
                                         <Line
-                                            key={u.login}
+                                            key={model}
                                             type="monotone"
-                                            dataKey={u.login}
-                                            stroke={CHART_COLORS[i % CHART_COLORS.length]}
+                                            dataKey={model}
+                                            stroke={CHART_COLORS[topModels.indexOf(model) % CHART_COLORS.length]}
                                             strokeWidth={2}
                                             dot={false}
                                             activeDot={{ r: 4 }}

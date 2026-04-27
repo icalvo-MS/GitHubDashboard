@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, Fragment } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,7 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { cn } from "@/lib/utils";
 import type { UserPremiumRequestData } from "@/services/github-service";
 
-type SortKey = "login" | "includedRequests" | "billedRequests" | "grossAmount" | "billedAmount" | "pctUsed" | "pctBudget";
+type SortKey = "login" | "grossRequests" | "includedRequests" | "billedRequests" | "grossAmount" | "billedAmount" | "pctUsed" | "pctBudget";
 type SortDir = "asc" | "desc";
 
 interface Props {
@@ -38,18 +38,21 @@ const fmt = (n: number) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(n);
 
 const fmtNum = (n: number) =>
-    new Intl.NumberFormat("en-US").format(n);
+    new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(n);
 
 function SortIcon({ dir }: { dir: SortDir | null }) {
     if (!dir) return <span className="ml-1 text-muted-foreground opacity-40">↕</span>;
     return <span className="ml-1">{dir === "asc" ? "↑" : "↓"}</span>;
 }
 
+const PAGE_SIZE = 10;
+
 export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }: Props) {
     const [filter, setFilter] = useState("");
     const [sortKey, setSortKey] = useState<SortKey>("billedAmount");
     const [sortDir, setSortDir] = useState<SortDir>("desc");
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
+    const [page, setPage] = useState(1);
 
     const handleSort = (key: SortKey) => {
         if (sortKey === key) {
@@ -58,6 +61,7 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
             setSortKey(key);
             setSortDir("desc");
         }
+        setPage(1);
     };
 
     const toggleRow = (login: string) => {
@@ -74,7 +78,12 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
         return data.filter(u => u.login.toLowerCase().includes(q));
     }, [data, filter]);
 
-    // Enrich data with computed % columns
+    // Reset to page 1 whenever filter changes
+    const handleFilterChange = (value: string) => {
+        setFilter(value);
+        setPage(1);
+    };
+
     const enriched = useMemo(() => filtered.map(u => ({
         ...u,
         pctUsed: includedPerSeat > 0 ? (u.includedRequests / includedPerSeat) * 100 : 0,
@@ -92,6 +101,12 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
         });
     }, [enriched, sortKey, sortDir]);
 
+    const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const pageStart = (safePage - 1) * PAGE_SIZE;
+    const pageEnd = Math.min(safePage * PAGE_SIZE, sorted.length);
+    const paginated = sorted.slice(pageStart, pageEnd);
+
     const thClass = "px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide cursor-pointer select-none whitespace-nowrap hover:text-foreground transition-colors";
     const tdClass = "px-4 py-3 text-sm";
 
@@ -103,14 +118,14 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                         Per-User Billing Breakdown
                         <InfoTooltip
                             title="Per-User Billing Breakdown"
-                            content="Shows included (free) and billed (charged) premium model requests per user. '% Used' is included requests vs. the per-seat quota. '% Budget' is each user's billed amount vs. the org monthly budget. Expand a row for model breakdown."
-                            insight="Users near 100% included usage may soon incur billed charges. Users with high % Budget share are the main drivers of overage cost."
+                            content="Monthly premium model requests per user. Gross Requests = all requests made. Included = covered by the per-seat quota (discountQuantity). Billed = charged over-quota (netQuantity). % Used = included vs. per-seat allowance. % Budget = billed cost vs. org budget. Click a row to expand model breakdown."
+                            insight="Users near 100% included usage may soon incur billed charges. Users with high % Budget are the main cost drivers."
                         />
                     </CardTitle>
                     <Input
                         placeholder="Filter by username…"
                         value={filter}
-                        onChange={e => setFilter(e.target.value)}
+                        onChange={e => handleFilterChange(e.target.value)}
                         className="w-56"
                     />
                 </div>
@@ -129,11 +144,14 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                                     <th className={thClass} onClick={() => handleSort("login")}>
                                         User <SortIcon dir={sortKey === "login" ? sortDir : null} />
                                     </th>
+                                    <th className={cn(thClass, "text-right")} onClick={() => handleSort("grossRequests")}>
+                                        Gross Reqs <SortIcon dir={sortKey === "grossRequests" ? sortDir : null} />
+                                    </th>
                                     <th className={cn(thClass, "text-right")} onClick={() => handleSort("includedRequests")}>
-                                        Included Requests <SortIcon dir={sortKey === "includedRequests" ? sortDir : null} />
+                                        Included <SortIcon dir={sortKey === "includedRequests" ? sortDir : null} />
                                     </th>
                                     <th className={cn(thClass, "text-right")} onClick={() => handleSort("billedRequests")}>
-                                        Billed Requests <SortIcon dir={sortKey === "billedRequests" ? sortDir : null} />
+                                        Billed Reqs <SortIcon dir={sortKey === "billedRequests" ? sortDir : null} />
                                     </th>
                                     <th className={cn(thClass, "text-right")} onClick={() => handleSort("grossAmount")}>
                                         Gross Amount <SortIcon dir={sortKey === "grossAmount" ? sortDir : null} />
@@ -150,10 +168,9 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                                 </tr>
                             </thead>
                             <tbody>
-                                {sorted.map(user => (
-                                    <>
+                                {paginated.map(user => (
+                                    <Fragment key={user.login}>
                                         <tr
-                                            key={user.login}
                                             className="border-b hover:bg-muted/20 transition-colors cursor-pointer"
                                             onClick={() => toggleRow(user.login)}
                                         >
@@ -163,7 +180,16 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                                                 ) : null}
                                             </td>
                                             <td className={tdClass}>
-                                                <span className="font-medium">{user.login}</span>
+                                                <div className="flex items-center gap-2">
+                                                    {user.avatarUrl && (
+                                                        // eslint-disable-next-line @next/next/no-img-element
+                                                        <img src={user.avatarUrl} alt={user.login} className="w-5 h-5 rounded-full" loading="lazy" />
+                                                    )}
+                                                    <span className="font-medium">{user.login}</span>
+                                                </div>
+                                            </td>
+                                            <td className={cn(tdClass, "text-right tabular-nums text-muted-foreground")}>
+                                                {fmtNum(user.grossRequests)}
                                             </td>
                                             <td className={cn(tdClass, "text-right tabular-nums text-muted-foreground")}>
                                                 {fmtNum(user.includedRequests)}
@@ -188,10 +214,15 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                                             <tr key={`${user.login}-${m.model}`} className="bg-muted/10 border-b border-dashed">
                                                 <td />
                                                 <td className={cn(tdClass, "pl-8")}>
-                                                    <Badge variant="secondary" className="font-mono text-xs">{m.model}</Badge>
-                                                    {m.pricePerUnit > 0 && (
-                                                        <span className="ml-2 text-xs text-muted-foreground">${m.pricePerUnit}/req</span>
-                                                    )}
+                                                    <div className="flex items-center gap-2">
+                                                        <Badge variant="secondary" className="font-mono text-xs">{m.model}</Badge>
+                                                        {m.pricePerUnit > 0 && (
+                                                            <span className="text-xs text-muted-foreground">${m.pricePerUnit}/req</span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className={cn(tdClass, "text-right tabular-nums text-muted-foreground text-xs")}>
+                                                    {fmtNum(m.grossRequests)}
                                                 </td>
                                                 <td className={cn(tdClass, "text-right tabular-nums text-muted-foreground text-xs")}>
                                                     {fmtNum(m.includedRequests)}
@@ -209,10 +240,34 @@ export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }
                                                 <td />
                                             </tr>
                                         ))}
-                                    </>
+                                    </Fragment>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                )}
+                {sorted.length > 0 && (
+                    <div className="flex items-center justify-between px-4 py-3 border-t text-sm text-muted-foreground">
+                        <span>
+                            Showing {sorted.length === 0 ? 0 : pageStart + 1}–{pageEnd} of {sorted.length} users
+                        </span>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => setPage(p => Math.max(1, p - 1))}
+                                disabled={safePage <= 1}
+                                className="px-2 py-1 rounded border disabled:opacity-40 hover:bg-muted/50 transition-colors"
+                            >
+                                ← Prev
+                            </button>
+                            <span className="tabular-nums">{safePage} / {totalPages}</span>
+                            <button
+                                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                                disabled={safePage >= totalPages}
+                                className="px-2 py-1 rounded border disabled:opacity-40 hover:bg-muted/50 transition-colors"
+                            >
+                                Next →
+                            </button>
+                        </div>
                     </div>
                 )}
             </CardContent>

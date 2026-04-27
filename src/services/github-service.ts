@@ -1,5 +1,4 @@
 import { githubClient } from "@/lib/github";
-import { githubClassicClient } from "@/lib/github-classic";
 
 // ---------------------------------------------------------------------------
 // Billing types
@@ -19,21 +18,16 @@ export interface PremiumRequestUsageItem {
     netAmount: number;
 }
 
-export interface UserPremiumRequestData {
-    login: string;
-    avatarUrl?: string;
-    includedRequests: number;
-    billedRequests: number;
+/** Per-model aggregate for the selected month. Used in the billing table. */
+export interface ModelPremiumRequestData {
+    model: string;
+    sku: string;
+    pricePerUnit: number;
+    includedRequests: number;  // discountQuantity
+    billedRequests: number;    // netQuantity
     grossAmount: number;
-    billedAmount: number;
-    byModel: Array<{
-        model: string;
-        includedRequests: number;
-        billedRequests: number;
-        grossAmount: number;
-        billedAmount: number;
-        pricePerUnit: number;
-    }>;
+    billedAmount: number;      // netAmount
+    grossRequests: number;     // grossQuantity
 }
 
 export interface DailyUsagePoint {
@@ -42,11 +36,60 @@ export interface DailyUsagePoint {
     billedAmount: number;
     grossRequests: number;
     billedRequests: number;
+    /** Per-model breakdown for this day */
+    byModel: Array<{
+        model: string;
+        grossAmount: number;
+        billedAmount: number;
+    }>;
 }
 
-export interface UserDailyData {
+/** Per-user monthly aggregate with per-model breakdown. Used in the billing table. */
+export interface UserPremiumRequestData {
     login: string;
-    data: DailyUsagePoint[];
+    avatarUrl?: string;
+    grossRequests: number;
+    includedRequests: number;
+    billedRequests: number;
+    grossAmount: number;
+    billedAmount: number;
+    byModel: Array<{
+        model: string;
+        grossRequests: number;
+        includedRequests: number;
+        billedRequests: number;
+        grossAmount: number;
+        billedAmount: number;
+        pricePerUnit: number;
+    }>;
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency limiter — prevents GitHub secondary rate limit exhaustion.
+// Processes `items` through `fn` with at most `concurrency` tasks in flight.
+// ---------------------------------------------------------------------------
+async function concurrentMap<T, R>(
+    items: T[],
+    concurrency: number,
+    fn: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = new Array(items.length);
+    let index = 0;
+
+    async function worker() {
+        while (index < items.length) {
+            const i = index++;
+            try {
+                results[i] = { status: 'fulfilled', value: await fn(items[i]) };
+            } catch (e) {
+                results[i] = { status: 'rejected', reason: e };
+            }
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+    await Promise.all(workers);
+    return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,202 +323,240 @@ export class GitHubService {
     // -----------------------------------------------------------------------
     // Billing: Premium Request Usage
     // Endpoint: GET /organizations/{org}/settings/billing/premium_request/usage
-    // Requires classic PAT with manage_billing:copilot or read:org scope.
+    // Works with fine-grained PAT (GITHUB_TOKEN) or classic PAT with
+    // manage_billing:copilot / read:org scopes.
+    // NOTE: The API does not expose per-user breakdowns — data is org-level,
+    // aggregated per model/SKU.
     // -----------------------------------------------------------------------
 
-    /** Fetch premium request usage for a specific user in a given year/month. */
-    static async getPremiumRequestUsageForUser(
+    /** Fetch raw premium request usage items for the org in a given year/month (or day). */
+    private static async fetchPremiumRequestItems(
         org: string,
-        username: string,
         year: number,
         month: number,
+        day?: number,
     ): Promise<PremiumRequestUsageItem[]> {
         try {
-            const { data } = await githubClassicClient.request(
+            const { data } = await githubClient.request(
                 'GET /organizations/{org}/settings/billing/premium_request/usage',
                 {
                     org,
                     year,
                     month,
-                    user: username,
+                    ...(day !== undefined ? { day } : {}),
                     headers: { 'X-GitHub-Api-Version': '2026-03-10' },
                 }
             );
             return ((data as any).usageItems ?? []) as PremiumRequestUsageItem[];
         } catch (error) {
-            console.error(`Error fetching premium request usage for ${username}:`, error);
+            console.error(`Error fetching premium request usage (${year}-${month}${day !== undefined ? `-${day}` : ''}):`, error);
             return [];
         }
     }
 
-    /** Fetch daily premium request usage totals for the org for a given year/month. */
+    /** Fetch monthly usage aggregated per model. Used for the billing table. */
+    static async getMonthlyPremiumRequestByModel(
+        org: string,
+        year: number,
+        month: number,
+    ): Promise<ModelPremiumRequestData[]> {
+        const items = await GitHubService.fetchPremiumRequestItems(org, year, month);
+        const map = new Map<string, ModelPremiumRequestData>();
+        for (const item of items) {
+            const prev = map.get(item.model) ?? {
+                model: item.model,
+                sku: item.sku,
+                pricePerUnit: item.pricePerUnit,
+                includedRequests: 0,
+                billedRequests: 0,
+                grossAmount: 0,
+                billedAmount: 0,
+                grossRequests: 0,
+            };
+            map.set(item.model, {
+                ...prev,
+                includedRequests: prev.includedRequests + item.discountQuantity,
+                billedRequests: prev.billedRequests + item.netQuantity,
+                grossAmount: prev.grossAmount + item.grossAmount,
+                billedAmount: prev.billedAmount + item.netAmount,
+                grossRequests: prev.grossRequests + item.grossQuantity,
+            });
+        }
+        return Array.from(map.values()).sort((a, b) => b.grossAmount - a.grossAmount);
+    }
+
+    /** Fetch daily usage totals + per-model breakdown for the org in a given year/month. */
     static async getOrgDailyPremiumRequestUsage(
         org: string,
         year: number,
         month: number,
     ): Promise<DailyUsagePoint[]> {
         const daysInMonth = new Date(year, month, 0).getDate();
-        const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-
-        const results = await Promise.allSettled(
-            days.map(async (day) => {
-                try {
-                    const { data } = await githubClassicClient.request(
-                        'GET /organizations/{org}/settings/billing/premium_request/usage',
-                        {
-                            org,
-                            year,
-                            month,
-                            day,
-                            headers: { 'X-GitHub-Api-Version': '2026-03-10' },
-                        }
-                    );
-                    const items: PremiumRequestUsageItem[] = (data as any).usageItems ?? [];
-                    return {
-                        date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-                        grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
-                        billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
-                        grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
-                        billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
-                    } as DailyUsagePoint;
-                } catch {
-                    return {
-                        date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
-                        grossAmount: 0,
-                        billedAmount: 0,
-                        grossRequests: 0,
-                        billedRequests: 0,
-                    } as DailyUsagePoint;
-                }
-            })
-        );
-
-        // Filter to days that are not in the future
         const today = new Date();
+        const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
+            .filter(d => new Date(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`) <= today);
+
+        // Limit concurrency to avoid GitHub secondary rate limits
+        const results = await concurrentMap(days, 5, async (day): Promise<DailyUsagePoint> => {
+            const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            const items = await GitHubService.fetchPremiumRequestItems(org, year, month, day);
+            // Build per-model breakdown
+            const modelMap = new Map<string, { grossAmount: number; billedAmount: number }>();
+            for (const item of items) {
+                const prev = modelMap.get(item.model) ?? { grossAmount: 0, billedAmount: 0 };
+                modelMap.set(item.model, {
+                    grossAmount: prev.grossAmount + item.grossAmount,
+                    billedAmount: prev.billedAmount + item.netAmount,
+                });
+            }
+            return {
+                date,
+                grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
+                billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
+                grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
+                billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
+                byModel: Array.from(modelMap.entries()).map(([model, v]) => ({ model, ...v })),
+            };
+        });
+
         return results
             .filter((r): r is PromiseFulfilledResult<DailyUsagePoint> => r.status === 'fulfilled')
-            .map(r => r.value)
-            .filter(d => new Date(d.date) <= today);
+            .map(r => r.value);
     }
 
-    /** Fetch premium request usage for ALL users with Copilot seats in the org. */
+    /** Fetch raw premium request usage items for a specific user in a given year/month (or day). */
+    private static async fetchPremiumRequestItemsForUser(
+        org: string,
+        username: string,
+        year: number,
+        month: number,
+        day?: number,
+    ): Promise<PremiumRequestUsageItem[]> {
+        try {
+            const { data } = await githubClient.request(
+                'GET /organizations/{org}/settings/billing/premium_request/usage',
+                {
+                    org,
+                    year,
+                    month,
+                    user: username,
+                    ...(day !== undefined ? { day } : {}),
+                    headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+                } as any
+            );
+            return ((data as any).usageItems ?? []) as PremiumRequestUsageItem[];
+        } catch (error) {
+            console.error(`Error fetching premium request usage for user ${username}:`, error);
+            return [];
+        }
+    }
+
+    /** Fetch monthly usage aggregated per user (with per-model breakdown). */
     static async getAllUsersPremiumRequestData(
         org: string,
         year: number,
         month: number,
     ): Promise<UserPremiumRequestData[]> {
-        // 1. Get list of users with Copilot seats
-        let logins: string[] = [];
+        // 1. Get seat holders (provides logins + avatars)
+        let seatMap = new Map<string, string>(); // login → avatarUrl
         try {
             const seats = await GitHubService.getCopilotSeats(org);
             if (seats && Array.isArray((seats as any).seats)) {
-                logins = (seats as any).seats
-                    .map((s: any): string | undefined => s.assignee?.login as string | undefined)
-                    .filter((l: string | undefined): l is string => Boolean(l));
+                for (const s of (seats as any).seats) {
+                    const login: string | undefined = s.assignee?.login;
+                    if (login) seatMap.set(login, s.assignee?.avatar_url ?? "");
+                }
             }
         } catch (error) {
-            console.error("Error fetching Copilot seats for billing:", error);
+            console.error("Error fetching Copilot seats:", error);
         }
 
+        const logins = Array.from(seatMap.keys());
         if (logins.length === 0) return [];
 
-        // 2. Fetch per-user usage in parallel
-        const results = await Promise.allSettled(
-            logins.map(async (login) => {
-                const items = await GitHubService.getPremiumRequestUsageForUser(org, login, year, month);
-                const byModelMap = new Map<string, {
-                    includedRequests: number;
-                    billedRequests: number;
-                    grossAmount: number;
-                    billedAmount: number;
-                    pricePerUnit: number;
-                }>();
-                for (const item of items) {
-                    const prev = byModelMap.get(item.model) ?? {
-                        includedRequests: 0,
-                        billedRequests: 0,
-                        grossAmount: 0,
-                        billedAmount: 0,
-                        pricePerUnit: item.pricePerUnit,
-                    };
-                    byModelMap.set(item.model, {
-                        includedRequests: prev.includedRequests + item.discountQuantity,
-                        billedRequests: prev.billedRequests + item.netQuantity,
-                        grossAmount: prev.grossAmount + item.grossAmount,
-                        billedAmount: prev.billedAmount + item.netAmount,
-                        pricePerUnit: item.pricePerUnit,
-                    });
-                }
-                const byModel = Array.from(byModelMap.entries()).map(([model, v]) => ({ model, ...v }));
-                return {
-                    login,
-                    includedRequests: byModel.reduce((s, m) => s + m.includedRequests, 0),
-                    billedRequests: byModel.reduce((s, m) => s + m.billedRequests, 0),
-                    grossAmount: byModel.reduce((s, m) => s + m.grossAmount, 0),
-                    billedAmount: byModel.reduce((s, m) => s + m.billedAmount, 0),
-                    byModel,
-                } as UserPremiumRequestData;
-            })
-        );
+        // 2. Fetch per-user usage with limited concurrency to avoid rate limits
+        const results = await concurrentMap(logins, 5, async (login): Promise<UserPremiumRequestData> => {
+            const items = await GitHubService.fetchPremiumRequestItemsForUser(org, login, year, month);
+            const byModelMap = new Map<string, {
+                grossRequests: number;
+                includedRequests: number;
+                billedRequests: number;
+                grossAmount: number;
+                billedAmount: number;
+                pricePerUnit: number;
+            }>();
+            for (const item of items) {
+                const prev = byModelMap.get(item.model) ?? {
+                    grossRequests: 0, includedRequests: 0, billedRequests: 0,
+                    grossAmount: 0, billedAmount: 0, pricePerUnit: item.pricePerUnit,
+                };
+                byModelMap.set(item.model, {
+                    grossRequests: prev.grossRequests + item.grossQuantity,
+                    includedRequests: prev.includedRequests + item.discountQuantity,
+                    billedRequests: prev.billedRequests + item.netQuantity,
+                    grossAmount: prev.grossAmount + item.grossAmount,
+                    billedAmount: prev.billedAmount + item.netAmount,
+                    pricePerUnit: item.pricePerUnit,
+                });
+            }
+            const byModel = Array.from(byModelMap.entries())
+                .map(([model, v]) => ({ model, ...v }))
+                .sort((a, b) => b.grossAmount - a.grossAmount);
+            return {
+                login,
+                avatarUrl: seatMap.get(login) ?? "",
+                grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
+                includedRequests: items.reduce((s, i) => s + i.discountQuantity, 0),
+                billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
+                grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
+                billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
+                byModel,
+            };
+        });
 
         return results
             .filter((r): r is PromiseFulfilledResult<UserPremiumRequestData> => r.status === 'fulfilled')
             .map(r => r.value)
-            .filter(u => u.grossAmount > 0 || u.includedRequests > 0 || u.billedRequests > 0);
+            .filter(u => u.grossRequests > 0)
+            .sort((a, b) => b.grossAmount - a.grossAmount);
     }
 
-    /** Fetch per-day usage for multiple users in parallel. Used for per-user evolution chart. */
+    /** Per-day gross amount per user for the given logins. Returns an array ordered to match `logins`. */
     static async getUsersDailyPremiumRequestData(
         org: string,
-        logins: string[],
+        logins: Array<{ login: string; avatarUrl: string }>,
         year: number,
         month: number,
-    ): Promise<UserDailyData[]> {
+    ): Promise<Array<{ login: string; avatarUrl: string; dailyPoints: DailyUsagePoint[] }>> {
         if (logins.length === 0) return [];
         const daysInMonth = new Date(year, month, 0).getDate();
         const today = new Date();
+        const days = Array.from({ length: daysInMonth }, (_, i) => i + 1)
+            .filter(d => new Date(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`) <= today);
 
-        const results = await Promise.allSettled(
-            logins.map(async (login) => {
-                const dayResults = await Promise.allSettled(
-                    Array.from({ length: daysInMonth }, (_, i) => i + 1).map(async (day) => {
-                        const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                        if (new Date(date) > today) return null;
-                        try {
-                            const { data } = await githubClassicClient.request(
-                                'GET /organizations/{org}/settings/billing/premium_request/usage',
-                                {
-                                    org,
-                                    year,
-                                    month,
-                                    day,
-                                    user: login,
-                                    headers: { 'X-GitHub-Api-Version': '2026-03-10' },
-                                }
-                            );
-                            const items: PremiumRequestUsageItem[] = (data as any).usageItems ?? [];
-                            return {
-                                date,
-                                grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
-                                billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
-                                grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
-                                billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
-                            } as DailyUsagePoint;
-                        } catch {
-                            return { date, grossAmount: 0, billedAmount: 0, grossRequests: 0, billedRequests: 0 } as DailyUsagePoint;
-                        }
-                    })
-                );
-                const data = dayResults
-                    .filter((r): r is PromiseFulfilledResult<DailyUsagePoint | null> => r.status === 'fulfilled')
-                    .map(r => r.value)
-                    .filter((d): d is DailyUsagePoint => d !== null);
-                return { login, data } as UserDailyData;
-            })
-        );
+        // Process one user at a time; each user fans out days with limited concurrency.
+        const results = await concurrentMap(logins, 3, async ({ login, avatarUrl }) => {
+            const dayResults = await concurrentMap(days, 5, async (day): Promise<DailyUsagePoint> => {
+                const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                const items = await GitHubService.fetchPremiumRequestItemsForUser(org, login, year, month, day);
+                return {
+                    date,
+                    grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
+                    billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
+                    grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
+                    billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
+                    byModel: [],
+                };
+            });
+            const dailyPoints = dayResults
+                .filter((r): r is PromiseFulfilledResult<DailyUsagePoint> => r.status === 'fulfilled')
+                .map(r => r.value);
+            return { login, avatarUrl, dailyPoints };
+        });
 
         return results
-            .filter((r): r is PromiseFulfilledResult<UserDailyData> => r.status === 'fulfilled')
+            .filter((r): r is PromiseFulfilledResult<{ login: string; avatarUrl: string; dailyPoints: DailyUsagePoint[] }> => r.status === 'fulfilled')
             .map(r => r.value);
     }
 }
+
