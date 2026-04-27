@@ -20,16 +20,16 @@ interface Props {
 function PctBar({ value, warn }: { value: number; warn?: boolean }) {
     const clamped = Math.min(value, 100);
     return (
-        <div className="flex items-center gap-2">
-            <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+        <div className="flex items-center justify-end gap-2">
+            <span className={cn("tabular-nums text-xs", clamped >= 100 ? "text-red-600 font-medium" : "")}>
+                {value.toFixed(1)}%
+            </span>
+            <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden shrink-0">
                 <div
                     className={cn("h-full rounded-full", clamped >= 100 ? "bg-red-500" : warn ? "bg-amber-400" : "bg-blue-500")}
                     style={{ width: `${clamped}%` }}
                 />
             </div>
-            <span className={cn("tabular-nums text-xs", clamped >= 100 ? "text-red-600 font-medium" : "")}>
-                {value.toFixed(1)}%
-            </span>
         </div>
     );
 }
