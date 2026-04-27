@@ -9,60 +9,75 @@ interface CopilotEngagementBreakdownProps {
 }
 
 export function CopilotEngagementBreakdown({ data }: CopilotEngagementBreakdownProps) {
-    // Aggregate editor/IDE data from the API
-    console.log('CopilotEngagementBreakdown received data:', data?.length, 'items');
-
     const editorMap = new Map<string, { completions: number, chat: number }>()
 
+    // Prefer the new-format totals_by_ide pass-through (present when data comes
+    // from the 2026 Copilot usage metrics API).  Fall back to the legacy nested
+    // structure for backward compatibility.
+    const hasNewFormat = data?.some(
+        (day: any) => Array.isArray(day.totals_by_ide) && day.totals_by_ide.length > 0
+    )
+
     data?.forEach((day: any) => {
-        // Try to extract editor data from copilot_ide_code_completions
-        const ideCompletions = day.copilot_ide_code_completions
-        if (ideCompletions?.editors && Array.isArray(ideCompletions.editors)) {
-            console.log('Found editors in copilot_ide_code_completions:', ideCompletions.editors.length);
-            ideCompletions.editors.forEach((editor: any) => {
-                const editorName = editor.name || 'Unknown'
-                const existing = editorMap.get(editorName) || { completions: 0, chat: 0 }
-
-                // Aggregate total code completions from all languages
-                let totalCompletions = 0
-                if (editor.models && Array.isArray(editor.models)) {
-                    editor.models.forEach((model: any) => {
-                        if (model.languages && Array.isArray(model.languages)) {
-                            model.languages.forEach((lang: any) => {
-                                totalCompletions += lang.total_code_acceptances || 0
-                            })
-                        }
-                    })
-                }
-
-                editorMap.set(editorName, {
-                    completions: existing.completions + totalCompletions,
-                    chat: existing.chat
+        if (hasNewFormat && Array.isArray(day.totals_by_ide)) {
+            // New API: totals_by_ide has per-IDE code_acceptance_activity_count
+            // and user_initiated_interaction_count (all prompts, used as chat proxy).
+            day.totals_by_ide.forEach((ide: any) => {
+                const name = ide.ide || 'Unknown'
+                const existing = editorMap.get(name) ?? { completions: 0, chat: 0 }
+                const completions = ide.code_acceptance_activity_count ?? 0
+                // user_initiated_interaction_count covers all prompts; subtract
+                // completions to get a rough chat-specific interaction count.
+                const chat = Math.max(0, (ide.user_initiated_interaction_count ?? 0) - completions)
+                editorMap.set(name, {
+                    completions: existing.completions + completions,
+                    chat: existing.chat + chat,
                 })
             })
-        }
+        } else {
+            // Legacy API: traverse copilot_ide_code_completions.editors[].models[].languages[]
+            const ideCompletions = day.copilot_ide_code_completions
+            if (ideCompletions?.editors && Array.isArray(ideCompletions.editors)) {
+                ideCompletions.editors.forEach((editor: any) => {
+                    const editorName = editor.name || 'Unknown'
+                    if (editorName === '_aggregate') return  // skip synthetic aggregate editor
+                    const existing = editorMap.get(editorName) ?? { completions: 0, chat: 0 }
 
-        // Try to extract chat data from copilot_ide_chat
-        const ideChat = day.copilot_ide_chat
-        if (ideChat?.editors && Array.isArray(ideChat.editors)) {
-            console.log('Found editors in copilot_ide_chat:', ideChat.editors.length);
-            ideChat.editors.forEach((editor: any) => {
-                const editorName = editor.name || 'Unknown'
-                const existing = editorMap.get(editorName) || { completions: 0, chat: 0 }
-
-                // Aggregate total chat turns from all models
-                let totalChatTurns = 0
-                if (editor.models && Array.isArray(editor.models)) {
-                    editor.models.forEach((model: any) => {
-                        totalChatTurns += model.total_chats || 0
+                    let totalCompletions = 0
+                    if (Array.isArray(editor.models)) {
+                        editor.models.forEach((model: any) => {
+                            if (Array.isArray(model.languages)) {
+                                model.languages.forEach((lang: any) => {
+                                    totalCompletions += lang.total_code_acceptances ?? 0
+                                })
+                            }
+                        })
+                    }
+                    editorMap.set(editorName, {
+                        completions: existing.completions + totalCompletions,
+                        chat: existing.chat,
                     })
-                }
-
-                editorMap.set(editorName, {
-                    completions: existing.completions,
-                    chat: existing.chat + totalChatTurns
                 })
-            })
+            }
+
+            const ideChat = day.copilot_ide_chat
+            if (ideChat?.editors && Array.isArray(ideChat.editors)) {
+                ideChat.editors.forEach((editor: any) => {
+                    const editorName = editor.name || 'Unknown'
+                    const existing = editorMap.get(editorName) ?? { completions: 0, chat: 0 }
+
+                    let totalChatTurns = 0
+                    if (Array.isArray(editor.models)) {
+                        editor.models.forEach((model: any) => {
+                            totalChatTurns += model.total_chats ?? 0
+                        })
+                    }
+                    editorMap.set(editorName, {
+                        completions: existing.completions,
+                        chat: existing.chat + totalChatTurns,
+                    })
+                })
+            }
         }
     })
 
