@@ -1,4 +1,48 @@
 import { githubClient } from "@/lib/github";
+import { githubClassicClient } from "@/lib/github-classic";
+
+// ---------------------------------------------------------------------------
+// Billing types
+// ---------------------------------------------------------------------------
+
+export interface PremiumRequestUsageItem {
+    product: string;
+    sku: string;
+    model: string;
+    unitType: string;
+    pricePerUnit: number;
+    grossQuantity: number;
+    grossAmount: number;
+    discountQuantity: number;
+    discountAmount: number;
+    netQuantity: number;
+    netAmount: number;
+}
+
+export interface UserPremiumRequestData {
+    login: string;
+    avatarUrl?: string;
+    includedRequests: number;
+    billedRequests: number;
+    grossAmount: number;
+    billedAmount: number;
+    byModel: Array<{
+        model: string;
+        includedRequests: number;
+        billedRequests: number;
+        grossAmount: number;
+        billedAmount: number;
+        pricePerUnit: number;
+    }>;
+}
+
+export interface DailyUsagePoint {
+    date: string;        // "YYYY-MM-DD"
+    grossAmount: number;
+    billedAmount: number;
+    grossRequests: number;
+    billedRequests: number;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers for the new Copilot usage metrics API (GA as of 2026)
@@ -226,5 +270,152 @@ export class GitHubService {
             console.error("Error fetching Org events:", error);
             return [];
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Billing: Premium Request Usage
+    // Endpoint: GET /organizations/{org}/settings/billing/premium_request/usage
+    // Requires classic PAT with manage_billing:copilot or read:org scope.
+    // -----------------------------------------------------------------------
+
+    /** Fetch premium request usage for a specific user in a given year/month. */
+    static async getPremiumRequestUsageForUser(
+        org: string,
+        username: string,
+        year: number,
+        month: number,
+    ): Promise<PremiumRequestUsageItem[]> {
+        try {
+            const { data } = await githubClassicClient.request(
+                'GET /organizations/{org}/settings/billing/premium_request/usage',
+                {
+                    org,
+                    year,
+                    month,
+                    user: username,
+                    headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+                }
+            );
+            return ((data as any).usageItems ?? []) as PremiumRequestUsageItem[];
+        } catch (error) {
+            console.error(`Error fetching premium request usage for ${username}:`, error);
+            return [];
+        }
+    }
+
+    /** Fetch daily premium request usage totals for the org for a given year/month. */
+    static async getOrgDailyPremiumRequestUsage(
+        org: string,
+        year: number,
+        month: number,
+    ): Promise<DailyUsagePoint[]> {
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+
+        const results = await Promise.allSettled(
+            days.map(async (day) => {
+                try {
+                    const { data } = await githubClassicClient.request(
+                        'GET /organizations/{org}/settings/billing/premium_request/usage',
+                        {
+                            org,
+                            year,
+                            month,
+                            day,
+                            headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+                        }
+                    );
+                    const items: PremiumRequestUsageItem[] = (data as any).usageItems ?? [];
+                    return {
+                        date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+                        grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
+                        billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
+                        grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
+                        billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
+                    } as DailyUsagePoint;
+                } catch {
+                    return {
+                        date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+                        grossAmount: 0,
+                        billedAmount: 0,
+                        grossRequests: 0,
+                        billedRequests: 0,
+                    } as DailyUsagePoint;
+                }
+            })
+        );
+
+        // Filter to days that are not in the future
+        const today = new Date();
+        return results
+            .filter((r): r is PromiseFulfilledResult<DailyUsagePoint> => r.status === 'fulfilled')
+            .map(r => r.value)
+            .filter(d => new Date(d.date) <= today);
+    }
+
+    /** Fetch premium request usage for ALL users with Copilot seats in the org. */
+    static async getAllUsersPremiumRequestData(
+        org: string,
+        year: number,
+        month: number,
+    ): Promise<UserPremiumRequestData[]> {
+        // 1. Get list of users with Copilot seats
+        let logins: string[] = [];
+        try {
+            const seats = await GitHubService.getCopilotSeats(org);
+            if (seats && Array.isArray((seats as any).seats)) {
+                logins = (seats as any).seats
+                    .map((s: any): string | undefined => s.assignee?.login as string | undefined)
+                    .filter((l: string | undefined): l is string => Boolean(l));
+            }
+        } catch (error) {
+            console.error("Error fetching Copilot seats for billing:", error);
+        }
+
+        if (logins.length === 0) return [];
+
+        // 2. Fetch per-user usage in parallel
+        const results = await Promise.allSettled(
+            logins.map(async (login) => {
+                const items = await GitHubService.getPremiumRequestUsageForUser(org, login, year, month);
+                const byModelMap = new Map<string, {
+                    includedRequests: number;
+                    billedRequests: number;
+                    grossAmount: number;
+                    billedAmount: number;
+                    pricePerUnit: number;
+                }>();
+                for (const item of items) {
+                    const prev = byModelMap.get(item.model) ?? {
+                        includedRequests: 0,
+                        billedRequests: 0,
+                        grossAmount: 0,
+                        billedAmount: 0,
+                        pricePerUnit: item.pricePerUnit,
+                    };
+                    byModelMap.set(item.model, {
+                        includedRequests: prev.includedRequests + item.discountQuantity,
+                        billedRequests: prev.billedRequests + item.netQuantity,
+                        grossAmount: prev.grossAmount + item.grossAmount,
+                        billedAmount: prev.billedAmount + item.netAmount,
+                        pricePerUnit: item.pricePerUnit,
+                    });
+                }
+                const byModel = Array.from(byModelMap.entries()).map(([model, v]) => ({ model, ...v }));
+                return {
+                    login,
+                    includedRequests: byModel.reduce((s, m) => s + m.includedRequests, 0),
+                    billedRequests: byModel.reduce((s, m) => s + m.billedRequests, 0),
+                    grossAmount: byModel.reduce((s, m) => s + m.grossAmount, 0),
+                    billedAmount: byModel.reduce((s, m) => s + m.billedAmount, 0),
+                    byModel,
+                } as UserPremiumRequestData;
+            })
+        );
+
+        return results
+            .filter((r): r is PromiseFulfilledResult<UserPremiumRequestData> => r.status === 'fulfilled')
+            .map(r => r.value)
+            .filter(u => u.grossAmount > 0 || u.includedRequests > 0 || u.billedRequests > 0);
     }
 }
