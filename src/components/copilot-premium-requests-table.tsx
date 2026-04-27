@@ -8,11 +8,30 @@ import { InfoTooltip } from "@/components/info-tooltip";
 import { cn } from "@/lib/utils";
 import type { UserPremiumRequestData } from "@/services/github-service";
 
-type SortKey = "login" | "includedRequests" | "billedRequests" | "grossAmount" | "billedAmount";
+type SortKey = "login" | "includedRequests" | "billedRequests" | "grossAmount" | "billedAmount" | "pctUsed" | "pctBudget";
 type SortDir = "asc" | "desc";
 
 interface Props {
     data: UserPremiumRequestData[];
+    includedPerSeat: number;
+    orgBudget: number;
+}
+
+function PctBar({ value, warn }: { value: number; warn?: boolean }) {
+    const clamped = Math.min(value, 100);
+    return (
+        <div className="flex items-center gap-2">
+            <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                <div
+                    className={cn("h-full rounded-full", clamped >= 100 ? "bg-red-500" : warn ? "bg-amber-400" : "bg-blue-500")}
+                    style={{ width: `${clamped}%` }}
+                />
+            </div>
+            <span className={cn("tabular-nums text-xs", clamped >= 100 ? "text-red-600 font-medium" : "")}>
+                {value.toFixed(1)}%
+            </span>
+        </div>
+    );
 }
 
 const fmt = (n: number) =>
@@ -26,7 +45,7 @@ function SortIcon({ dir }: { dir: SortDir | null }) {
     return <span className="ml-1">{dir === "asc" ? "↑" : "↓"}</span>;
 }
 
-export function CopilotPremiumRequestsTable({ data }: Props) {
+export function CopilotPremiumRequestsTable({ data, includedPerSeat, orgBudget }: Props) {
     const [filter, setFilter] = useState("");
     const [sortKey, setSortKey] = useState<SortKey>("billedAmount");
     const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -55,16 +74,23 @@ export function CopilotPremiumRequestsTable({ data }: Props) {
         return data.filter(u => u.login.toLowerCase().includes(q));
     }, [data, filter]);
 
+    // Enrich data with computed % columns
+    const enriched = useMemo(() => filtered.map(u => ({
+        ...u,
+        pctUsed: includedPerSeat > 0 ? (u.includedRequests / includedPerSeat) * 100 : 0,
+        pctBudget: orgBudget > 0 ? (u.billedAmount / orgBudget) * 100 : 0,
+    })), [filtered, includedPerSeat, orgBudget]);
+
     const sorted = useMemo(() => {
-        return [...filtered].sort((a, b) => {
-            const av = a[sortKey];
-            const bv = b[sortKey];
+        return [...enriched].sort((a, b) => {
+            const av = a[sortKey as keyof typeof a] as number | string;
+            const bv = b[sortKey as keyof typeof b] as number | string;
             if (typeof av === "string" && typeof bv === "string") {
                 return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
             }
             return sortDir === "asc" ? (av as number) - (bv as number) : (bv as number) - (av as number);
         });
-    }, [filtered, sortKey, sortDir]);
+    }, [enriched, sortKey, sortDir]);
 
     const thClass = "px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wide cursor-pointer select-none whitespace-nowrap hover:text-foreground transition-colors";
     const tdClass = "px-4 py-3 text-sm";
@@ -77,8 +103,8 @@ export function CopilotPremiumRequestsTable({ data }: Props) {
                         Per-User Billing Breakdown
                         <InfoTooltip
                             title="Per-User Billing Breakdown"
-                            content="Shows included (free) and billed (charged) premium model requests per user. Expand a row to see the model-by-model breakdown."
-                            insight="Users with high billed requests are consuming requests beyond the included quota. Consider reviewing their model usage or adjusting seat allocations."
+                            content="Shows included (free) and billed (charged) premium model requests per user. '% Used' is included requests vs. the per-seat quota. '% Budget' is each user's billed amount vs. the org monthly budget. Expand a row for model breakdown."
+                            insight="Users near 100% included usage may soon incur billed charges. Users with high % Budget share are the main drivers of overage cost."
                         />
                     </CardTitle>
                     <Input
@@ -115,6 +141,12 @@ export function CopilotPremiumRequestsTable({ data }: Props) {
                                     <th className={cn(thClass, "text-right")} onClick={() => handleSort("billedAmount")}>
                                         Billed Amount <SortIcon dir={sortKey === "billedAmount" ? sortDir : null} />
                                     </th>
+                                    <th className={cn(thClass, "text-right")} onClick={() => handleSort("pctUsed")}>
+                                        % Used <SortIcon dir={sortKey === "pctUsed" ? sortDir : null} />
+                                    </th>
+                                    <th className={cn(thClass, "text-right")} onClick={() => handleSort("pctBudget")}>
+                                        % Budget <SortIcon dir={sortKey === "pctBudget" ? sortDir : null} />
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -145,6 +177,12 @@ export function CopilotPremiumRequestsTable({ data }: Props) {
                                             <td className={cn(tdClass, "text-right tabular-nums font-medium", user.billedAmount > 0 ? "text-red-600" : "")}>
                                                 {fmt(user.billedAmount)}
                                             </td>
+                                            <td className={cn(tdClass, "text-right")}>
+                                                <PctBar value={user.pctUsed} />
+                                            </td>
+                                            <td className={cn(tdClass, "text-right")}>
+                                                <PctBar value={user.pctBudget} warn={user.pctBudget >= 20} />
+                                            </td>
                                         </tr>
                                         {expanded.has(user.login) && user.byModel.map(m => (
                                             <tr key={`${user.login}-${m.model}`} className="bg-muted/10 border-b border-dashed">
@@ -167,6 +205,8 @@ export function CopilotPremiumRequestsTable({ data }: Props) {
                                                 <td className={cn(tdClass, "text-right tabular-nums text-xs", m.billedAmount > 0 ? "text-red-600" : "")}>
                                                     {fmt(m.billedAmount)}
                                                 </td>
+                                                <td />
+                                                <td />
                                             </tr>
                                         ))}
                                     </>

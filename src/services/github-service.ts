@@ -44,6 +44,11 @@ export interface DailyUsagePoint {
     billedRequests: number;
 }
 
+export interface UserDailyData {
+    login: string;
+    data: DailyUsagePoint[];
+}
+
 // ---------------------------------------------------------------------------
 // Helpers for the new Copilot usage metrics API (GA as of 2026)
 // The new endpoint returns signed download URLs to NDJSON report files.
@@ -417,5 +422,60 @@ export class GitHubService {
             .filter((r): r is PromiseFulfilledResult<UserPremiumRequestData> => r.status === 'fulfilled')
             .map(r => r.value)
             .filter(u => u.grossAmount > 0 || u.includedRequests > 0 || u.billedRequests > 0);
+    }
+
+    /** Fetch per-day usage for multiple users in parallel. Used for per-user evolution chart. */
+    static async getUsersDailyPremiumRequestData(
+        org: string,
+        logins: string[],
+        year: number,
+        month: number,
+    ): Promise<UserDailyData[]> {
+        if (logins.length === 0) return [];
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const today = new Date();
+
+        const results = await Promise.allSettled(
+            logins.map(async (login) => {
+                const dayResults = await Promise.allSettled(
+                    Array.from({ length: daysInMonth }, (_, i) => i + 1).map(async (day) => {
+                        const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                        if (new Date(date) > today) return null;
+                        try {
+                            const { data } = await githubClassicClient.request(
+                                'GET /organizations/{org}/settings/billing/premium_request/usage',
+                                {
+                                    org,
+                                    year,
+                                    month,
+                                    day,
+                                    user: login,
+                                    headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+                                }
+                            );
+                            const items: PremiumRequestUsageItem[] = (data as any).usageItems ?? [];
+                            return {
+                                date,
+                                grossAmount: items.reduce((s, i) => s + i.grossAmount, 0),
+                                billedAmount: items.reduce((s, i) => s + i.netAmount, 0),
+                                grossRequests: items.reduce((s, i) => s + i.grossQuantity, 0),
+                                billedRequests: items.reduce((s, i) => s + i.netQuantity, 0),
+                            } as DailyUsagePoint;
+                        } catch {
+                            return { date, grossAmount: 0, billedAmount: 0, grossRequests: 0, billedRequests: 0 } as DailyUsagePoint;
+                        }
+                    })
+                );
+                const data = dayResults
+                    .filter((r): r is PromiseFulfilledResult<DailyUsagePoint | null> => r.status === 'fulfilled')
+                    .map(r => r.value)
+                    .filter((d): d is DailyUsagePoint => d !== null);
+                return { login, data } as UserDailyData;
+            })
+        );
+
+        return results
+            .filter((r): r is PromiseFulfilledResult<UserDailyData> => r.status === 'fulfilled')
+            .map(r => r.value);
     }
 }

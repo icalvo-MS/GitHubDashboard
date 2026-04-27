@@ -1,5 +1,5 @@
+import { Suspense } from "react";
 import { GitHubService } from "@/services/github-service";
-import type { UserPremiumRequestData, DailyUsagePoint } from "@/services/github-service";
 import { auth, signOut } from "@/auth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,9 @@ import { CopilotEngagementBreakdown } from "@/components/copilot-engagement-brea
 import { CopilotAdoptionTrends } from "@/components/copilot-adoption-trends";
 import { DateRangeSelector } from "@/components/date-range-selector";
 import { InfoTooltip } from "@/components/info-tooltip";
-import { CopilotPremiumRequestsTable } from "@/components/copilot-premium-requests-table";
-import { CopilotPremiumRequestsChart } from "@/components/copilot-premium-requests-chart";
 import { BillingDateSelector } from "@/components/billing-date-selector";
+import { PremiumRequestsContent } from "@/components/copilot-premium-requests-content";
+import { PremiumRequestsSkeleton } from "@/components/copilot-premium-requests-skeleton";
 
 export default async function Dashboard(props: {
   searchParams: Promise<{ range?: string; tab?: string; billingYear?: string; billingMonth?: string }>;
@@ -35,8 +35,6 @@ export default async function Dashboard(props: {
   let copilotSeats = null;
   let copilotUsage = null;
   let orgEvents: any[] = [];
-  let premiumUsersData: UserPremiumRequestData[] = [];
-  let premiumDailyData: DailyUsagePoint[] = [];
 
   try {
     if (process.env.GITHUB_TOKEN) {
@@ -74,15 +72,6 @@ export default async function Dashboard(props: {
 
           // Fetch Org Events
           orgEvents = await GitHubService.getOrgEvents(process.env.NEXT_PUBLIC_GITHUB_ORG!);
-
-          // Fetch Premium Request billing data (only when on the premium-requests tab)
-          if (activeTab === "premium-requests") {
-            const orgSlug = process.env.NEXT_PUBLIC_GITHUB_ORG!;
-            [premiumUsersData, premiumDailyData] = await Promise.all([
-              GitHubService.getAllUsersPremiumRequestData(orgSlug, billingYear, billingMonth),
-              GitHubService.getOrgDailyPremiumRequestUsage(orgSlug, billingYear, billingMonth),
-            ]);
-          }
         } catch (orgError) {
           console.error("Failed to fetch Org:", orgError);
         }
@@ -305,8 +294,13 @@ export default async function Dashboard(props: {
           <div className="flex justify-end">
             <BillingDateSelector currentYear={billingYear} currentMonth={billingMonth} />
           </div>
-          <CopilotPremiumRequestsChart data={premiumDailyData} />
-          <CopilotPremiumRequestsTable data={premiumUsersData} />
+          <Suspense fallback={<PremiumRequestsSkeleton />}>
+            <PremiumRequestsContent
+              org={process.env.NEXT_PUBLIC_GITHUB_ORG!}
+              year={billingYear}
+              month={billingMonth}
+            />
+          </Suspense>
         </TabsContent>
       </Tabs>
     </div>
