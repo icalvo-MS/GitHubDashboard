@@ -27,5 +27,7 @@ export async function GET() {
         createdAt: s.created_at ?? "",
     }));
 
-    return NextResponse.json(seats);
+    return NextResponse.json(seats, {
+        headers: { "Cache-Control": "private, max-age=300, stale-while-revalidate=600" },
+    });
 }

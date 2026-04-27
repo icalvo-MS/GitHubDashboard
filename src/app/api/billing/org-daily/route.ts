@@ -24,5 +24,12 @@ export async function GET(req: NextRequest) {
 
     const org = process.env.NEXT_PUBLIC_GITHUB_ORG!;
     const data = await GitHubService.getOrgDailyPremiumRequestUsage(org, year, month);
-    return NextResponse.json(data);
+
+    const now = new Date();
+    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+    const cacheControl = isCurrentMonth
+        ? "private, max-age=60, stale-while-revalidate=120"
+        : "private, max-age=3600, stale-while-revalidate=7200";
+
+    return NextResponse.json(data, { headers: { "Cache-Control": cacheControl } });
 }

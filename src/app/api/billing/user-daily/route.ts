@@ -35,14 +35,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Missing or invalid params: users[], year, month" }, { status: 400 });
     }
 
-    // Validate and cap the users list
+    // Validate the users list (cap at 50 to prevent excessive API calls)
     const validUsers = (users as Array<unknown>)
         .filter((u): u is { login: string; avatarUrl: string } =>
             typeof u === "object" && u !== null &&
             typeof (u as Record<string, unknown>).login === "string" &&
             typeof (u as Record<string, unknown>).avatarUrl === "string"
         )
-        .slice(0, 10);
+        .slice(0, 50);
 
     if (validUsers.length === 0) {
         return NextResponse.json([]);
@@ -50,5 +50,12 @@ export async function POST(req: NextRequest) {
 
     const org = process.env.NEXT_PUBLIC_GITHUB_ORG!;
     const data = await GitHubService.getUsersDailyPremiumRequestData(org, validUsers, year, month);
-    return NextResponse.json(data);
+
+    const now = new Date();
+    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+    const cacheControl = isCurrentMonth
+        ? "private, max-age=60, stale-while-revalidate=120"
+        : "private, max-age=3600, stale-while-revalidate=7200";
+
+    return NextResponse.json(data, { headers: { "Cache-Control": cacheControl } });
 }

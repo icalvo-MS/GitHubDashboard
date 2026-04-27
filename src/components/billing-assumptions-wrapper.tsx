@@ -69,16 +69,45 @@ export function BillingAssumptionsWrapper({ year, month }: Props) {
     const [usersDailyData, setUsersDailyData] = useState<UserDailyInfo[]>([]);
     const [dailyLoading, setDailyLoading] = useState(false);
     const [dailyFetched, setDailyFetched] = useState(false);
+    const [loadingDailyLogins, setLoadingDailyLogins] = useState<Set<string>>(new Set());
+
+    // On-demand fetch: called by the chart when a user without daily data is selected
+    const fetchUsersDailyData = (users: Array<{ login: string; avatarUrl: string }>) => {
+        if (users.length === 0) return;
+        const logins = users.map(u => u.login);
+        setLoadingDailyLogins(prev => new Set([...prev, ...logins]));
+        fetch("/api/billing/user-daily", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ users, year, month }),
+        })
+            .then(r => r.json())
+            .then((d: UserDailyInfo[]) => {
+                setUsersDailyData(prev => {
+                    const existing = new Set(prev.map(u => u.login));
+                    return [...prev, ...d.filter(u => !existing.has(u.login))];
+                });
+            })
+            .catch(() => { /* silent — user will see no line */ })
+            .finally(() => {
+                setLoadingDailyLogins(prev => {
+                    const next = new Set(prev);
+                    logins.forEach(l => next.delete(l));
+                    return next;
+                });
+            });
+    };
 
     useEffect(() => {
         if (!usersData || usersData.length === 0 || dailyFetched) return;
-        const top10 = usersData.slice(0, 10).map(u => ({ login: u.login, avatarUrl: u.avatarUrl ?? "" }));
+        // Fetch initial daily data for top 5 users only
+        const initial = usersData.slice(0, 5).map(u => ({ login: u.login, avatarUrl: u.avatarUrl ?? "" }));
         setDailyFetched(true);
         setDailyLoading(true);
         fetch("/api/billing/user-daily", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ users: top10, year, month }),
+            body: JSON.stringify({ users: initial, year, month }),
         })
             .then(r => r.json())
             .then((d: UserDailyInfo[]) => { setUsersDailyData(d); setDailyLoading(false); })
@@ -184,7 +213,13 @@ export function BillingAssumptionsWrapper({ year, month }: Props) {
                 dailyLoading ? (
                     <Skeleton className="h-80 w-full rounded-xl" />
                 ) : usersDailyData.length > 0 ? (
-                    <CopilotUserDailyChart usersDaily={usersDailyData} grossByLogin={grossByLogin} />
+                    <CopilotUserDailyChart
+                        usersDaily={usersDailyData}
+                        grossByLogin={grossByLogin}
+                        allUsers={(usersData ?? []).map(u => ({ login: u.login, avatarUrl: u.avatarUrl ?? "" }))}
+                        onUsersNeeded={fetchUsersDailyData}
+                        loadingLogins={loadingDailyLogins}
+                    />
                 ) : null
             )}
 
